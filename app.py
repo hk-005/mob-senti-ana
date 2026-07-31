@@ -6,7 +6,18 @@ from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
 
-# 1. Download necessary NLTK data
+# -----------------------------------------------------------------------------
+# 1. Page Configuration
+# -----------------------------------------------------------------------------
+st.set_page_config(
+    page_title="Smartphone Review Sentiment Analyzer",
+    page_icon="📱",
+    layout="centered"
+)
+
+# -----------------------------------------------------------------------------
+# 2. Download NLTK Resources & Load Model Assets
+# -----------------------------------------------------------------------------
 @st.cache_resource
 def download_nltk_data():
     nltk.download('punkt', quiet=True)
@@ -16,7 +27,6 @@ def download_nltk_data():
 
 download_nltk_data()
 
-# 2. Load Model Assets
 @st.cache_resource
 def load_assets():
     model = joblib.load('sentiment_model.pkl')
@@ -29,7 +39,9 @@ except Exception as e:
     st.error(f"Error loading model assets: {e}")
     st.stop()
 
-# Initialize Preprocessing Tools
+# -----------------------------------------------------------------------------
+# 3. Preprocessing Setup
+# -----------------------------------------------------------------------------
 lemmatizer = WordNetLemmatizer()
 default_stopwords = set(stopwords.words('english'))
 negation_words = {'not', 'no', 'nor', 'neither', 'never', 'none', 'cannot'}
@@ -46,56 +58,75 @@ def preprocess_text(text):
     ]
     return ' '.join(cleaned_tokens)
 
-# 3. Streamlit Page Config & UI
-st.set_page_config(page_title="Smartphone Review Sentiment Analyzer", page_icon="📱")
-
+# -----------------------------------------------------------------------------
+# 4. Streamlit UI Layout
+# -----------------------------------------------------------------------------
 st.title("📱 Smartphone Review Sentiment Analyzer")
 st.write("Enter a user review below to predict sentiment (**Positive**, **Neutral**, or **Negative**).")
 
+# Sidebar Info
+st.sidebar.title("📌 Model Details")
+st.sidebar.info("Model: Logistic Regression\nVectorizer: TF-IDF\nPipeline: NLTK Lemmatization & Custom Negation Processing")
+
+# Input Text Box
 user_review = st.text_area(
     "Review Text:", 
-    placeholder="Display is not satisfactory but the processor performance is good",
+    placeholder="e.g., Display is not good but processor performance is better.",
     height=120
 )
 
+# -----------------------------------------------------------------------------
+# 5. Prediction Logic
+# -----------------------------------------------------------------------------
 if st.button("Analyze Sentiment", type="primary"):
     if not user_review.strip():
         st.warning("Please enter a review to analyze.")
     else:
-        # Preprocess input
+        # Preprocess text
         cleaned_review = preprocess_text(user_review)
         review_vec = tfidf.transform([cleaned_review])
         
-        # Get probability scores
+        # Calculate probabilities
         probabilities = model.predict_proba(review_vec)[0]
         max_prob = max(probabilities)
         raw_pred = str(model.classes_[probabilities.argmax()]).strip().lower()
 
-        # Check for contrast words (e.g., "but", "however")
+        # Rule 1: Explicit contrast words indicate mixed/neutral review
         contrast_words = ["but", "however", "although", "whereas"]
         has_contrast = any(re.search(rf"\b{word}\b", user_review.lower()) for word in contrast_words)
 
-        # Set confidence threshold
-        CONFIDENCE_THRESHOLD = 0.65
+        # Rule 2: Confidence threshold for near 50/50 predictions
+        CONFIDENCE_THRESHOLD = 0.53
 
-        # Determine Final Sentiment
-        if has_contrast or max_prob < CONFIDENCE_THRESHOLD:
+        # Determine Final Sentiment Label
+        if has_contrast:
             sentiment = "NEUTRAL 😐"
             color_box = st.warning
+            reason = "Detected contrasting statements in review."
+        elif max_prob < CONFIDENCE_THRESHOLD:
+            sentiment = "NEUTRAL 😐"
+            color_box = st.warning
+            reason = "Model confidence score is near balanced."
         elif raw_pred in ['positive', 'pos', '1']:
             sentiment = "POSITIVE 🎉"
             color_box = st.success
+            reason = "High confidence positive classification."
         elif raw_pred in ['negative', 'neg', '0']:
             sentiment = "NEGATIVE 🚨"
             color_box = st.error
+            reason = "High confidence negative classification."
         else:
             sentiment = "NEUTRAL 😐"
             color_box = st.warning
+            reason = "Default fallback."
 
+        # Display Result Box
         st.markdown("### Result:")
         color_box(f"**Predicted Sentiment:** {sentiment}")
         
+        # Details Collapsible Section
         with st.expander("See Prediction Details"):
-            st.write(f"**Highest Probability Score:** {max_prob * 100:.2f}%")
+            st.write(f"**Confidence Score:** {max_prob * 100:.2f}%")
             st.write(f"**Preprocessed Text:** `{cleaned_review}`")
             st.write(f"**Raw Model Prediction:** `{model.classes_[probabilities.argmax()]}`")
+            st.write(f"**Decision Reason:** {reason}")

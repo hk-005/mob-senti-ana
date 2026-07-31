@@ -66,16 +66,15 @@ st.write("Enter a user review below to predict sentiment (**Positive**, **Neutra
 
 # Sidebar Info
 st.sidebar.title("📌 Model Details")
-st.sidebar.info("Model: Logistic Regression\nVectorizer: TF-IDF\nPipeline: NLTK Lemmatization & Custom Negation Processing")
+st.sidebar.info("Model: Logistic Regression\nVectorizer: TF-IDF\nPipeline: NLTK Lemmatization & Custom Rule Processing")
 
 # Input Text Box
 user_review = st.text_area(
     "Review Text:", 
-    placeholder="e.g., Display is not good but processor performance is better.",
+    placeholder="e.g., The software update broke the fingerprint sensor...",
     height=120
 )
 
-# -----------------------------------------------------------------------------
 # -----------------------------------------------------------------------------
 # 5. Prediction Logic
 # -----------------------------------------------------------------------------
@@ -96,11 +95,23 @@ if st.button("Analyze Sentiment", type="primary"):
         contrast_words = ["but", "however", "although", "whereas"]
         has_contrast = any(re.search(rf"\b{word}\b", user_review.lower()) for word in contrast_words)
 
+        # Rule 2: Check for explicit negative keywords that indicate dissatisfaction
+        negative_keywords = [
+            "broke", "broken", "muffled", "terrible", "horrible", "overheats", 
+            "drain", "drains", "scratched", "defective", "useless", "worst", 
+            "disappointing", "sluggish", "freeze", "freezes", "crash", "crashes"
+        ]
+        has_negative_kw = any(re.search(rf"\b{word}\b", user_review.lower()) for word in negative_keywords)
+
         # Determine Final Sentiment Label
         if has_contrast:
             sentiment = "NEUTRAL 😐"
             color_box = st.warning
             reason = "Detected contrasting statements in review."
+        elif has_negative_kw and raw_pred == 'neutral':
+            sentiment = "NEGATIVE 🚨"
+            color_box = st.error
+            reason = "Override: Detected strong negative keyword in neutral model prediction."
         elif raw_pred in ['positive', 'pos', '1']:
             sentiment = "POSITIVE 🎉"
             color_box = st.success

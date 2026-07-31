@@ -2,7 +2,7 @@
 
 A machine learning web application that predicts the sentiment (Positive, Negative, or Neutral) of mobile phone customer reviews using Natural Language Processing (NLP) and Logistic Regression. Built with Python and deployed using Streamlit Community Cloud.
 
-🚀 **Live Demo:** [Launch the App]((https://mob-senti-ana-djsmpgsw8mvahqgxnqtyvu.streamlit.app)) **
+🚀 **Live Demo:** [Launch the App](https://mob-senti-ana-djsmpgsw8mvahqgxnqtyvu.streamlit.app). **
 
 ---
 

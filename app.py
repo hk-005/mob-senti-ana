@@ -76,6 +76,12 @@ def predict_single_review(user_review):
     max_prob = max(probabilities)
     raw_pred = str(model.classes_[probabilities.argmax()]).strip().lower()
 
+    # Map raw model class probabilities into a neat dictionary
+    class_probs = {
+        str(cls).strip().upper(): round(prob * 100, 2) 
+        for cls, prob in zip(model.classes_, probabilities)
+    }
+
     has_contrast = any(re.search(rf"\b{word}\b", user_review.lower()) for word in contrast_words)
     has_negative_kw = any(re.search(rf"\b{word}\b", user_review.lower()) for word in negative_keywords)
 
@@ -95,7 +101,7 @@ def predict_single_review(user_review):
         sentiment = "NEUTRAL"
         reason = "Model classified as Neutral."
 
-    return sentiment, max_prob, cleaned_review, raw_pred, reason
+    return sentiment, max_prob, cleaned_review, raw_pred, reason, class_probs
 
 # -----------------------------------------------------------------------------
 # 4. Streamlit UI & Navigation Tabs
@@ -128,7 +134,7 @@ with tab1:
         if not user_review.strip():
             st.warning("Please enter a review to analyze.")
         else:
-            sentiment, max_prob, cleaned_review, raw_pred, reason = predict_single_review(user_review)
+            sentiment, max_prob, cleaned_review, raw_pred, reason, class_probs = predict_single_review(user_review)
             
             # Display Box
             if sentiment == "POSITIVE":
@@ -144,6 +150,15 @@ with tab1:
             st.markdown("### Result:")
             color_box(f"**Predicted Sentiment:** {sentiment_str}")
             
+            # Probability Distribution Bar Chart
+            st.write("### Class Probability Breakdown")
+            prob_df = pd.DataFrame(
+                list(class_probs.items()), 
+                columns=["Sentiment Class", "Probability (%)"]
+            ).set_index("Sentiment Class")
+            
+            st.bar_chart(prob_df)
+
             with st.expander("See Prediction Details"):
                 st.write(f"**Confidence Score:** {max_prob * 100:.2f}%")
                 st.write(f"**Preprocessed Text:** `{cleaned_review}`")
@@ -178,7 +193,7 @@ with tab2:
                     confidences = []
                     
                     for text in df[selected_col]:
-                        sentiment, max_prob, _, _, _ = predict_single_review(str(text))
+                        sentiment, max_prob, _, _, _, _ = predict_single_review(str(text))
                         results.append(sentiment)
                         confidences.append(round(max_prob * 100, 2))
 

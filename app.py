@@ -76,6 +76,7 @@ user_review = st.text_area(
 )
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
 # 5. Prediction Logic
 # -----------------------------------------------------------------------------
 if st.button("Analyze Sentiment", type="primary"):
@@ -95,30 +96,23 @@ if st.button("Analyze Sentiment", type="primary"):
         contrast_words = ["but", "however", "although", "whereas"]
         has_contrast = any(re.search(rf"\b{word}\b", user_review.lower()) for word in contrast_words)
 
-        # Rule 2: Confidence threshold for near 50/50 predictions
-        CONFIDENCE_THRESHOLD = 0.53
-
         # Determine Final Sentiment Label
         if has_contrast:
             sentiment = "NEUTRAL 😐"
             color_box = st.warning
             reason = "Detected contrasting statements in review."
-        elif max_prob < CONFIDENCE_THRESHOLD:
-            sentiment = "NEUTRAL 😐"
-            color_box = st.warning
-            reason = "Model confidence score is near balanced."
         elif raw_pred in ['positive', 'pos', '1']:
             sentiment = "POSITIVE 🎉"
             color_box = st.success
-            reason = "High confidence positive classification."
+            reason = f"Model classified as Positive ({max_prob * 100:.1f}% confidence)."
         elif raw_pred in ['negative', 'neg', '0']:
             sentiment = "NEGATIVE 🚨"
             color_box = st.error
-            reason = "High confidence negative classification."
+            reason = f"Model classified as Negative ({max_prob * 100:.1f}% confidence)."
         else:
             sentiment = "NEUTRAL 😐"
             color_box = st.warning
-            reason = "Default fallback."
+            reason = "Model classified as Neutral."
 
         # Display Result Box
         st.markdown("### Result:")

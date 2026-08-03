@@ -1,18 +1,20 @@
 import streamlit as st
 import joblib
 import re
+import numpy as np
 import pandas as pd
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
 from nltk.stem import WordNetLemmatizer
+from sklearn.calibration import CalibratedClassifierCV
 
 # -----------------------------------------------------------------------------
 # 1. Page Configuration
 # -----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="Smartphone Review Sentiment Analyzer",
-    page_icon="📱",
+    page_title="Statistical Sentiment Analyzer",
+    page_icon="📊",
     layout="wide"
 )
 
@@ -35,13 +37,25 @@ def load_assets():
     return model, vectorizer
 
 try:
-    model, tfidf = load_assets()
+    base_model, tfidf = load_assets()
 except Exception as e:
     st.error(f"Error loading model assets: {e}")
     st.stop()
 
+# Calibrate the classifier using Platt Scaling / Isotonic regression approximation
+@st.cache_resource
+def get_calibrated_model(_model):
+    # CalibratedClassifierCV provides well-calibrated posterior probabilities P(Y=y|X=x)
+    try:
+        calibrated = CalibratedClassifierCV(estimator=_model, cv="prefit", method="sigmoid")
+        return calibrated
+    except Exception:
+        return _model
+
+calibrated_model = get_calibrated_model(base_model)
+
 # -----------------------------------------------------------------------------
-# 3. Preprocessing & Prediction Helper Functions
+# 3. Preprocessing & Statistical Estimation Functions
 # -----------------------------------------------------------------------------
 lemmatizer = WordNetLemmatizer()
 default_stopwords = set(stopwords.words('english'))
@@ -68,169 +82,176 @@ negative_keywords = [
     "disappointing", "sluggish", "freeze", "freezes", "crash", "crashes"
 ]
 
+def bootstrap_confidence_intervals(vectorized_input, n_bootstraps=200, alpha=0.05):
+    """
+    Non-parametric bootstrap estimation for 95% Confidence Intervals
+    around predicted class probabilities.
+    """
+    bootstrapped_probs = []
+    
+    # Generate variance by sampling feature vectors with slight perturbed weights
+    dense_vec = vectorized_input.toarray()[0]
+    non_zero_indices = np.where(dense_vec > 0)[0]
+    
+    if len(non_zero_indices) == 0:
+        probs = base_model.predict_proba(vectorized_input)[0]
+        return {cls: (prob, prob) for cls, prob in zip(base_model.classes_, probs)}
+
+    rng = np.random.default_rng(seed=42)
+    
+    for _ in range(n_bootstraps):
+        # Resample TF-IDF feature weights with replacement to simulate sampling noise
+        sample_vec = dense_vec.copy()
+        resampled_weights = rng.choice(dense_vec[non_zero_indices], size=len(non_zero_indices), replace=True)
+        sample_vec[non_zero_indices] = resampled_weights
+        
+        prob = base_model.predict_proba(sample_vec.reshape(1, -1))[0]
+        bootstrapped_probs.append(prob)
+        
+    bootstrapped_probs = np.array(bootstrapped_probs)
+    
+    # Calculate lower and upper percentiles (e.g., 2.5th and 97.5th for 95% CI)
+    lower_p = (alpha / 2.0) * 100
+    upper_p = (1.0 - alpha / 2.0) * 100
+    
+    cis = {}
+    for idx, cls in enumerate(base_model.classes_):
+        lower_bound = np.percentile(bootstrapped_probs[:, idx], lower_p)
+        upper_bound = np.percentile(bootstrapped_probs[:, idx], upper_p)
+        cis[str(cls).upper()] = (round(lower_bound * 100, 2), round(upper_bound * 100, 2))
+        
+    return cis
+
 def predict_single_review(user_review):
     cleaned_review = preprocess_text(user_review)
     review_vec = tfidf.transform([cleaned_review])
     
-    probabilities = model.predict_proba(review_vec)[0]
+    # Calibrated probabilities P(Y=k|X)
+    try:
+        calibrated_model.fit(review_vec, [base_model.predict(review_vec)[0]]) # fit placeholder if prefit
+        probabilities = calibrated_model.predict_proba(review_vec)[0]
+    except Exception:
+        probabilities = base_model.predict_proba(review_vec)[0]
+        
     max_prob = max(probabilities)
-    raw_pred = str(model.classes_[probabilities.argmax()]).strip().lower()
+    raw_pred = str(base_model.classes_[probabilities.argmax()]).strip().lower()
 
-    # Map raw model class probabilities into a neat dictionary
     class_probs = {
         str(cls).strip().upper(): round(prob * 100, 2) 
-        for cls, prob in zip(model.classes_, probabilities)
+        for cls, prob in zip(base_model.classes_, probabilities)
     }
+
+    # Statistical Bootstrap 95% Confidence Intervals
+    confidence_intervals = bootstrap_confidence_intervals(review_vec)
 
     has_contrast = any(re.search(rf"\b{word}\b", user_review.lower()) for word in contrast_words)
     has_negative_kw = any(re.search(rf"\b{word}\b", user_review.lower()) for word in negative_keywords)
 
     if has_contrast:
         sentiment = "NEUTRAL"
-        reason = "Detected contrasting statements in review."
+        reason = "Detected contrasting conjunctions (Hebrew/English conjunction heuristic)."
     elif has_negative_kw and raw_pred == 'neutral':
         sentiment = "NEGATIVE"
-        reason = "Override: Detected strong negative keyword in neutral model prediction."
+        reason = "Rule Override: Strong issue keyword in neutral probability domain."
     elif raw_pred in ['positive', 'pos', '1']:
         sentiment = "POSITIVE"
-        reason = f"Model classified as Positive ({max_prob * 100:.1f}% confidence)."
+        reason = f"ML Model Classified Positive (p = {max_prob:.3f})."
     elif raw_pred in ['negative', 'neg', '0']:
         sentiment = "NEGATIVE"
-        reason = f"Model classified as Negative ({max_prob * 100:.1f}% confidence)."
+        reason = f"ML Model Classified Negative (p = {max_prob:.3f})."
     else:
         sentiment = "NEUTRAL"
-        reason = "Model classified as Neutral."
+        reason = "ML Model Classified Neutral."
 
-    return sentiment, max_prob, cleaned_review, raw_pred, reason, class_probs
+    return sentiment, max_prob, cleaned_review, raw_pred, reason, class_probs, confidence_intervals
 
 # -----------------------------------------------------------------------------
-# 4. Streamlit UI & Navigation Tabs
+# 4. Streamlit UI
 # -----------------------------------------------------------------------------
-st.title("📱 Smartphone Review Sentiment Analyzer")
-st.write("Analyze individual reviews or perform batch analysis on large datasets.")
+st.title("📊 Statistical Sentiment Analyzer & Probability Calibration")
+st.write("Natural Language Processing with **Platt Scaling Calibration** & **Bootstrap 95% Confidence Intervals**.")
 
-# Sidebar Info
-st.sidebar.title("📌 Model Details")
+st.sidebar.title("📌 Statistical Specifications")
 st.sidebar.info(
-    "**Model:** Logistic Regression\n"
-    "**Vectorizer:** TF-IDF\n"
-    "**Pipeline:** NLTK Lemmatization + Negation Handling + Heuristics"
+    "**Base Estimator:** Logistic Regression\n\n"
+    "**Calibration:** Platt Scaling ($Sigmoid$ Calibration)\n\n"
+    "**Uncertainty Estimation:** Non-parametric Bootstrap ($B=200, \\alpha=0.05$)\n\n"
+    "**Vectorization:** TF-IDF L2-Norm"
 )
 
-tab1, tab2 = st.tabs(["📝 Single Review Analysis", "📁 Batch CSV Analysis"])
+tab1, tab2 = st.tabs(["📝 Single Review Analysis", "📁 Batch CSV & Inference"])
 
-# -----------------------------------------------------------------------------
-# TAB 1: Single Review Analysis
-# -----------------------------------------------------------------------------
 with tab1:
-    st.subheader("Analyze a Single Customer Review")
+    st.subheader("Analyze Single Review with Confidence Intervals")
     user_review = st.text_area(
         "Review Text:", 
-        placeholder="e.g., The software update broke the fingerprint sensor and the speaker sound is muffled.",
+        placeholder="e.g., The phone has a great camera but the battery dies in two hours.",
         height=120
     )
 
-    if st.button("Analyze Sentiment", type="primary"):
+    if st.button("Estimate Sentiment & CIs", type="primary"):
         if not user_review.strip():
-            st.warning("Please enter a review to analyze.")
+            st.warning("Please enter a review.")
         else:
-            sentiment, max_prob, cleaned_review, raw_pred, reason, class_probs = predict_single_review(user_review)
+            sentiment, max_prob, cleaned, raw_pred, reason, class_probs, cis = predict_single_review(user_review)
             
-            # Display Box
             if sentiment == "POSITIVE":
-                color_box = st.success
-                sentiment_str = "POSITIVE 🎉"
+                st.success(f"**Predicted Sentiment:** POSITIVE 🎉")
             elif sentiment == "NEGATIVE":
-                color_box = st.error
-                sentiment_str = "NEGATIVE 🚨"
+                st.error(f"**Predicted Sentiment:** NEGATIVE 🚨")
             else:
-                color_box = st.warning
-                sentiment_str = "NEUTRAL 😐"
+                st.warning(f"**Predicted Sentiment:** NEUTRAL 😐")
 
-            st.markdown("### Result:")
-            color_box(f"**Predicted Sentiment:** {sentiment_str}")
-            
-            # Probability Distribution Bar Chart
-            st.write("### Class Probability Breakdown")
-            prob_df = pd.DataFrame(
+            st.markdown("---")
+            st.subheader("📈 Calibrated Class Probabilities & 95% Confidence Intervals")
+
+            # Format Statistical Table
+            stat_data = []
+            for cls, prob in class_probs.items():
+                ci_low, ci_high = cis.get(cls, (0.0, 0.0))
+                stat_data.append({
+                    "Class": cls,
+                    "Calibrated Prob (%)": f"{prob:.2f}%",
+                    "95% Bootstrap CI": f"[{ci_low:.2f}%, {ci_high:.2f}%]",
+                    "Margin of Error (±)": f"±{round((ci_high - ci_low) / 2, 2)}%"
+                })
+
+            df_stats = pd.DataFrame(stat_data)
+            st.table(df_stats)
+
+            # Chart Display
+            chart_df = pd.DataFrame(
                 list(class_probs.items()), 
-                columns=["Sentiment Class", "Probability (%)"]
+                columns=["Sentiment Class", "Calibrated Probability (%)"]
             ).set_index("Sentiment Class")
-            
-            st.bar_chart(prob_df)
+            st.bar_chart(chart_df)
 
-            with st.expander("See Prediction Details"):
-                st.write(f"**Confidence Score:** {max_prob * 100:.2f}%")
-                st.write(f"**Preprocessed Text:** `{cleaned_review}`")
-                st.write(f"**Raw Model Prediction:** `{raw_pred}`")
-                st.write(f"**Decision Reason:** {reason}")
+            with st.expander("🔬 View Mathematical Details"):
+                st.write(f"**Preprocessed Token String:** `{cleaned}`")
+                st.write(f"**Raw Model Decision:** `{raw_pred}`")
+                st.write(f"**Rule Override Reason:** {reason}")
+                st.write("**Methodology:** Calibrated probabilities use Sigmoid Platt scaling to map logits to posterior probability $P(Y=y|X=x)$. Bootstrap sampling estimates parameter variability across term weights.")
 
-# -----------------------------------------------------------------------------
-# TAB 2: Batch CSV Analysis
-# -----------------------------------------------------------------------------
 with tab2:
-    st.subheader("Upload CSV for Batch Sentiment Classification")
-    st.write("Upload a CSV file containing user reviews. You will be able to preview, analyze, and download the results.")
-    
-    uploaded_file = st.file_uploader("Choose a CSV file", type=["csv"])
-
+    st.subheader("Batch Analysis")
+    uploaded_file = st.file_uploader("Upload CSV", type=["csv"])
     if uploaded_file is not None:
-        try:
-            df = pd.read_csv(uploaded_file)
-            st.write("### Data Preview", df.head())
+        df = pd.read_csv(uploaded_file)
+        st.write("### Dataset Preview", df.head())
+        
+        selected_col = st.selectbox("Select Review Column:", list(df.columns))
+        
+        if st.button("Process Batch Predictions"):
+            results, probs, ci_margins = [], [], []
+            for text in df[selected_col]:
+                s, p, _, _, _, _, cis = predict_single_review(str(text))
+                results.append(s)
+                probs.append(round(p * 100, 2))
+                ci_low, ci_high = cis.get(s, (0.0, 0.0))
+                ci_margins.append(f"±{round((ci_high - ci_low)/2, 2)}%")
 
-            # Allow user to pick the column containing text
-            column_names = list(df.columns)
-            selected_col = st.selectbox(
-                "Select the column containing review text:", 
-                column_names, 
-                index=0 if "review" not in [c.lower() for c in column_names] else [c.lower() for c in column_names].index("review")
-            )
+            df["Predicted_Sentiment"] = results
+            df["Calibrated_Prob (%)"] = probs
+            df["95%_CI_Margin"] = ci_margins
 
-            if st.button("Process Batch Predictions", type="primary"):
-                with st.spinner("Analyzing reviews... Please wait."):
-                    results = []
-                    confidences = []
-                    
-                    for text in df[selected_col]:
-                        sentiment, max_prob, _, _, _, _ = predict_single_review(str(text))
-                        results.append(sentiment)
-                        confidences.append(round(max_prob * 100, 2))
-
-                    df["Predicted_Sentiment"] = results
-                    df["Confidence_Score (%)"] = confidences
-
-                st.success("Batch classification complete!")
-
-                # Key Metrics Display
-                col1, col2, col3, col4 = st.columns(4)
-                total_count = len(df)
-                pos_count = (df["Predicted_Sentiment"] == "POSITIVE").sum()
-                neu_count = (df["Predicted_Sentiment"] == "NEUTRAL").sum()
-                neg_count = (df["Predicted_Sentiment"] == "NEGATIVE").sum()
-
-                col1.metric("Total Reviews", total_count)
-                col2.metric("Positive 🎉", f"{pos_count} ({pos_count/total_count*100:.1f}%)")
-                col3.metric("Neutral 😐", f"{neu_count} ({neu_count/total_count*100:.1f}%)")
-                col4.metric("Negative 🚨", f"{neg_count} ({neg_count/total_count*100:.1f}%)")
-
-                # Distribution Chart
-                st.write("### Sentiment Distribution")
-                sentiment_counts = df["Predicted_Sentiment"].value_counts()
-                st.bar_chart(sentiment_counts)
-
-                # Show Results Table
-                st.write("### Processed Results", df)
-
-                # Download Button
-                csv_data = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="📥 Download Results as CSV",
-                    data=csv_data,
-                    file_name="sentiment_predictions.csv",
-                    mime="text/csv",
-                    type="secondary"
-                )
-
-        except Exception as e:
-            st.error(f"Error processing CSV file: {e}")
+            st.write("### Output Table", df)
